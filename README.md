@@ -11,9 +11,12 @@ As X-IvAp does not change the TS Channels automaticly this plugin manages TS2 Se
 - c. Now simply modify the PI_XP2TS.py file:
 -  1. PI_XP2TS    : __ResourcePath = "/absolute/path/to/Resources/plugins/X-IvAp Resources/"
 -  2. X-IvAp.conf : Füge folgendes hinzu:
-    > [TEAMSPEAK]
-    > tscontrol = "/absolute/path/to/the/TeamSpeak/Folder
-    > server = eu4 [any available TS Server][Is beeing overriden after each login]
+
+    [TEAMSPEAK]<br />
+    tscontrol = "/absolute/path/to/the/TeamSpeak/Folder"<br />
+    server = eu4 <br />
+
+eu4 can be replaced by any available TS Server Prefix. It is beeing overriden after each login. That way it is safe if a server closes in the future 
 
 ## Features
 - No longer has to be started seperately
