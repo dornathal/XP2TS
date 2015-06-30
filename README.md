@@ -13,10 +13,10 @@ As X-IvAp does not change the TS Channels automaticly this plugin manages TS2 Se
 -  2. X-IvAp.conf : Füge folgendes hinzu:
 
     [TEAMSPEAK]<br />
-    tscontrol = "/absolute/path/to/the/TeamSpeak/Folder"<br />
-    server = eu4 <br />
+    path = "/absolute/path/to/the/TeamSpeak/Folder"<br />
+    server = eu4.ts.ivao.aero <br />
 
-eu4 can be replaced by any available TS Server Prefix. It is beeing overriden after each login. That way it is safe if a server closes in the future 
+eu4.ts.ivao.aero can be replaced by any available TS Server. It is beeing overriden after each login. That way it is safe if a server closes in the future.
 
 ## Features
 - No longer has to be started seperately
