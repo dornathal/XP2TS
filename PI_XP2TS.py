@@ -39,7 +39,10 @@ import sys
 import os.path
 import re
 import time
+import math
 import subprocess
+from multiprocessing import Pool
+
 from ConfigParser import ConfigParser
 
 from XPLMDataAccess import *
@@ -48,10 +51,9 @@ from XPLMPlugin import *
 
 
 class PythonInterface:
-    __MaxWhazzupAge = 3000
+    __MaxWhazzupAge = 300
     __Whazz_url = "http://api.ivao.aero/getdata/whazzup/whazzup.txt"
     __ResourcePath = "/home/dornathal/.steam/steam/SteamApps/common/X-Plane 10/Resources/plugins/X-IvAp Resources/"
-    __ts_server = "%s.ts.ivao.aero"
 
     _loopcbs = 0
 
@@ -95,43 +97,42 @@ class PythonInterface:
         pass
 
     def loopcallback(self, elapsedcall, elapsedloop, counterin, refconin):
-        # print("ping")
-        newfreq = XPLMGetDatai(self.xDataRef)
+        new_freq = XPLMGetDatai(self.xDataRef)
 
-        if not self._oldfreq == newfreq:
+        if not self._oldfreq == new_freq:
             print("New Frequency tuned in")
-            print("Change TS Channel to %f !" % newfreq)
-            self._oldfreq = newfreq
+            print("Change TS Channel to %i !" % new_freq)
+            self._oldfreq = new_freq
 
-            Lon = XPLMGetDataf(self.xPlaneLon)
-            Lat = XPLMGetDataf(self.xPlaneLat)
+            plane_pos = (XPLMGetDataf(self.xPlaneLon), XPLMGetDataf(self.xPlaneLat))
+            print("Position: %f N, %f W" % plane_pos)
 
-            print("Position: %f N, %f W" % (Lat, Lon))
+            # TODO make this asynchron
+            self.newFrequenceTunedIn(new_freq, plane_pos)
 
-            nearest_atc = self.extract_atc(newfreq)
-            print(nearest_atc)
-            if nearest_atc == -1:
-                self.freq_conn(self.parseConfig().get("TEAMSPEAK", "SERVER").strip(), "UNICOM")
-            else:
-                self.freq_conn(nearest_atc[1], nearest_atc[0])
-
-        print("pong")
         return 1
 
-    def get_config(self):  # takes TS useful variables and fixes paths to call TS instance
+    def newFrequenceTunedIn(self, newFreq, planePos):
+        nearest_atc = self.extract_atc(newFreq, planePos)
+        if nearest_atc == -1:
+            self.freq_conn(self.parseConfig().get("TEAMSPEAK", "SERVER").strip(), "UNICOM")
+        else:
+            self.freq_conn(nearest_atc[4], nearest_atc[0])
+
+    def get_config(self):
+        """ takes TS useful variables and fixes paths to call TS instance """
         config = self.parseConfig()
 
-        ts_pwd = config.get('ACCOUNT', 'PASSWORD').strip()
-        ts_nick = config.get('ACCOUNT', 'VID').strip()
-        ts_path = config.get('TEAMSPEAK',
-                             'TSCONTROL').strip()  # I preferred to split TS paths for more customizable commands later
+        acc_vid = config.get('ACCOUNT', 'VID').strip()
+        acc_pwd = config.get('ACCOUNT', 'PASSWORD').strip()
+        ts_path = config.get('TEAMSPEAK', 'TSCONTROL').strip()
 
         self._ts_control_cmd = ts_path + "client_sdk/tsControl"
         if not os.path.isfile(self._ts_control_cmd):
             print(self._ts_control_cmd + "does not exists")
         self._ts_prefix_complete = self._ts_control_cmd + " CONNECT TeamSpeak://"
         self._ts_disconnect_str = self._ts_control_cmd + " DISCONNECT"
-        self._ts_login = "?nickname=\"%s\"?loginname=\"%s\"?password=\"%s\"?channel=" % ("%s", ts_nick, ts_pwd)
+        self._ts_login = "?nickname=\"%s\"?loginname=\"%s\"?password=\"%s\"?channel=\"%s\"" % ("%s", acc_vid, acc_pwd, "%s")
 
         print("Configuration loaded")
         pass
@@ -142,41 +143,38 @@ class PythonInterface:
         config.sections()
         return config
 
-    def freq_conn(self, ts_server, freq_chan, retry=0):  # connects TS to any server/freq.channel given
-        # returns 0 if ok, 1 if a retry is needed
+    def freq_conn(self, ts_server, freq_chan, retry=0):
+        """ connects TS to any server/freq.channel given
+            returns 0 if ok, 1 if a retry is needed
+        """
         # TODO exception detection
+        self.getwhazzup()
+        print(" ")
+        print("Connecting to %s/%s ...\n" % (ts_server, freq_chan))
+
         config = self.parseConfig()
         config.set("TEAMSPEAK", "SERVER", ts_server)
         config.write(open(self.__ResourcePath + "X-IvAp.conf", 'w'))
-        # try:
-        ts_conn_cmd = self._ts_control_cmd + " CONNECT TeamSpeak://" + self.__ts_server % ts_server + self._ts_login % config.get(
-            "ACCOUNT", "CALLSIGN") + freq_chan
+
+        ts_conn_cmd = self._ts_control_cmd + " CONNECT TeamSpeak://" + ts_server
+        ts_conn_cmd += self._ts_login % (config.get("ACCOUNT", "CALLSIGN"), freq_chan)
         consolecmd(ts_conn_cmd, self.__ResourcePath + "ts.log", "a")  # pass command to console and log output
 
-        print(" ")
-        print("Connecting to %s ...\n" % ts_server)  # + "with command: " + ts_conn_cmd   # debug
-        time.sleep(3)
-        # now let's check we're connected correctly
+        #self.checkConnection(freq_chan)
+        return 0
 
+    def checkConnection(self, freq_chan):
         ts_check_cmd = self._ts_control_cmd + " GET_USER_INFO"
         stout = self.performCommand(ts_check_cmd)
-        #    print stout
         if re.search(freq_chan, stout):
             print("OK! Connection should be established")
-        elif re.search("NOT CONNECTED", stout):
-            print(stout + "Maybe we reconnected too fast. I'll wait 5 secs now before trying again...")
-            time.sleep(5)
             return 1
+        if re.search("NOT CONNECTED", stout):
+            print(stout + "Maybe we reconnected too fast. I'll wait 5 secs now before trying again...")
         elif re.search("-1001", stout):
-            print(
-                "ERROR: Teamspeak appears to be quit. No changes done. Please tune unicom and run TS again!")  # TODO auto-select unicom?
-            # sys.exit()
+            print("ERROR: Teamspeak appears to be quit. No changes done. Please tune unicom and run TS again!")
         else:
             print("WARNING: Must have failed somewhere, let's try again")
-            retry += 1
-            return retry
-        # except:
-        #    print "ERROR passing console command to TS"
         return 0
 
     def performCommand(self, command):
@@ -186,31 +184,23 @@ class PythonInterface:
         filetolog.write(time.ctime() + ": " + stout)  # this is to log even connections
         return stout
 
-    def extract_atc(self, com1_freq):  # parses data got from internet and chooses the proper online ATC station
-        # returns a tuple with all data to connect to the choosen online ATC
-        # returns -1 if no (valid) online atc is found on the selected freq
-
-        # definitions
-        lat_xplane = self.xPlaneLat
-        lon_xplane = self.xPlaneLon
+    def extract_atc(self, com1_freq, planePos):
+        """
+        parses data got from internet and chooses the proper online ATC station
+        returns a tuple with all data to connect to the choosen online ATC
+        returns -1 if no (valid) online atc is found on the selected freq
+        """
 
         atc_on_freq = 0  # atc counter
         atc_list = []
         distances_list = []
-        lower_distance = 0
-
-        print(" ")
-        # debug # print "Your geographic position in X-Plane is lat: "+str(lat_xplane)+" lon: "+str(lon_xplane)
-
 
         try:
             whazzup = open(self.__ResourcePath + "whazzup.txt", "r")
         except:
             print("ERROR while opening whazzup.txt file. Is this file there?")
-        # print ":"+com1_freq+":" #debug
-        print(
-            "Now find listening ATC on the same freq (even .xx5 freqs are considered due to 25 KHz and 8.33Hz spacing):")
-        print("find for frequence: %f" % com1_freq)
+            return -1
+        print("Now find listening ATC on freq  %i:" % com1_freq)
         for line in whazzup:  # FOR cycle begin to parse whazzup lines
             splitted = line.split(':')
             if len(splitted) != 49:
@@ -218,43 +208,27 @@ class PythonInterface:
 
             icao_id = splitted[0]
             [role, freq, lat, lon] = splitted[3:7]
-            ts_serv = splitted[14].lower()
+            ts_server = splitted[35].split("/", 1)[0]
 
             if not (role == "ATC" and abs(float(freq) * 100 - com1_freq) < 1):
                 continue
-            print([icao_id, role, freq, lat, lon, ts_serv])
+            if re.search("OBS", icao_id) or re.search("No Voice", ts_server):
+                continue
 
-            if not re.search("OBS", icao_id) and not re.search("No Voice", ts_serv):
-                distance = calculate_distance(lat_xplane, lon_xplane, float(lat),
-                                              float(lon))  # computing stations distance
-                distances_list.append(distance)  # creating distances list to use out of loop
+            distance = calculate_distance(planePos, (float(lat), float(lon)))
+            distances_list.append(distance)
 
-                tuple_atc = icao_id, lat, lon, ts_serv, distance  # create a new tuple with these atc data
+            atc_list.append((icao_id, lat, lon, distance, ts_server))
+            atc_on_freq += 1
 
-                # Creating a list to display all valid online ATCs found on the selected freq.
-                # and append to atc list for further use
-
-                atc_list.append(tuple_atc)
-                print(str(atc_on_freq) + ": \t" + icao_id + " \t" + freq + " \t" + str(lat) + " \t" + str(
-                    lon) + " \t\t" + ts_serv + "\t - Distance (nm): \t" + str(distance))
-                atc_on_freq = atc_on_freq + 1  # counting one more valid station with com1 freq
-                # print atc_on_freq
-                # end for cyce
-
-        # Now deciding what online ATC is the nearest to return
-        print(" ")
+        print("Found %i ATC Stations" % atc_on_freq)
         if atc_on_freq != 0:
-            lower_distance = min(distances_list)  # gets the lower distances atc in the list
-            nearest_station = distances_list.index(lower_distance)  # and tell us which nearest atc index number is
-            print("The nearest valid station is: " + atc_list[nearest_station][0] + ", (" + str(
-                atc_list[nearest_station][4]) + " nm)")
-            nearest_atc_tuple = atc_list[nearest_station][0], atc_list[nearest_station][
-                3]  # preparing ATC data to return
+            nearest_station = distances_list.index(min(distances_list))
+            nearest_atc_tuple = atc_list[nearest_station]
+            print("The nearest valid station is: %s, (%.2f nm)" % (nearest_atc_tuple[0], nearest_atc_tuple[3]))
             return nearest_atc_tuple
         else:
-            print(
-                "WARNING: No valid ATC found in whazzup")  # TODO reload whzzup or manual connect?... ---------------- !
-            return -1  # this means no atc found at all
+            return -1
 
     pass
 
@@ -270,20 +244,19 @@ class PythonInterface:
                 if time.time() - os.path.getmtime(filename) < self.__MaxWhazzupAge:  # 3000 is for debug 300 is ok
                     print("Old network data are too young do die. I'll keep the previous by now...")
                     return 1
-                    # print age_whazzup
                 else:
                     print("Yes, updated network data are needed. Downloading now...")
                     os.remove(filename)
             except:
                 print("ERROR retrieving whazzup file from internet. Will try with older one if present.")
 
-        print("Downloading network data")
         os.system("wget \"%s\" -O \"%s\"" % (self.__Whazz_url, filename))
         if not os.path.exists(filename):
             print("ERROR while downloading network data (whazzup.txt)")
             print("Please check your network")
             return 0
         return 1
+
 
 
 def consolecmd(cmd, logfile, iomode):  # excute custom commands and logs output for debug if needed
@@ -298,13 +271,14 @@ def consolecmd(cmd, logfile, iomode):  # excute custom commands and logs output 
         print("ERROR while executing command: " + cmd)
         return 0
 
-def calculate_distance(lat1, lon1, lat2, lon2):  # self explicative returns geographic distances
+
+def calculate_distance(xPlanePos, ATCPos):  # self explicative returns geographic distances
     # maths stuff
     deg_to_rad = math.pi / 180.0
-    phi1 = (90.0 - lat1) * deg_to_rad
-    phi2 = (90.0 - lat2) * deg_to_rad
-    theta1 = lon1 * deg_to_rad
-    theta2 = lon2 * deg_to_rad
+    phi1 = (90.0 - xPlanePos[0]) * deg_to_rad
+    phi2 = (90.0 - ATCPos[0]) * deg_to_rad
+    theta1 = xPlanePos[1] * deg_to_rad
+    theta2 = ATCPos[1] * deg_to_rad
     cos = (math.sin(phi1) * math.sin(phi2) * math.cos(theta1 - theta2) + math.cos(phi1) * math.cos(phi2))
     arc = math.acos(cos)
     distance = arc * 3960  # nautical miles
