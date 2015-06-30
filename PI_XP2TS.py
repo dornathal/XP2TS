@@ -51,40 +51,43 @@ from XPLMPlugin import *
 
 
 class PythonInterface:
-    __MaxWhazzupAge = 300
-    __Whazz_url = "http://api.ivao.aero/getdata/whazzup/whazzup.txt"
-    __ResourcePath = "/home/dornathal/.steam/steam/SteamApps/common/X-Plane 10/Resources/plugins/X-IvAp Resources/"
 
-    _loopcbs = 0
+    def __init__(self):
+        self.__max_whazzup_age = 300
+        self.__whazzup_url = "http://api.ivao.aero/getdata/whazzup/whazzup.txt"
+        self.__resource_path = "/home/dornathal/.steam/steam/SteamApps/common/X-Plane 10/Resources/plugins/X-IvAp Resources/"
 
-    def XPluginStart(self):
+        self._loop_callbacks = 0
+        self._connected_channel = ""
         self.Name = "XP2TS"
         self.Sig = "Dornathal.Python.XP2TS"
         self.Desc = "Lets IvAp Control Teamspeak Channel Switches"
 
+    def XPluginStart(self):
+
         self.xDataRef = XPLMFindDataRef("sim/cockpit/radios/com1_freq_hz")
-        self.xPlaneLat = XPLMFindDataRef("sim/flightmodel/position/latitude")
-        self.xPlaneLon = XPLMFindDataRef("sim/flightmodel/position/longitude")
+        self.plane_lat = XPLMFindDataRef("sim/flightmodel/position/latitude")
+        self.plane_lon = XPLMFindDataRef("sim/flightmodel/position/longitude")
 
-        self.floopcb = self.loopcallback
+        self.__loop_callback = self.loop_callback
 
-        self._oldfreq = XPLMGetDatai(self.xDataRef)
+        self._old_freq = XPLMGetDatai(self.xDataRef)
 
         self.get_config()
 
-        if not self.getwhazzup():
+        if not self.update_whazzup():
             return 0
 
         # self._loopcbs += 1
         # print("RegisterFlightLoopCallback #%i" % (++self._loopcbs))
-        XPLMRegisterFlightLoopCallback(self, self.floopcb, 1.0, 0)
+        XPLMRegisterFlightLoopCallback(self, self.__loop_callback, 1.0, 0)
 
         return 1
 
     def XPluginStop(self):
         # print("UnregisterFlightLoopCallback #%i" % self._loopcbs)
         # self._loopcbs -= 1
-        XPLMUnregisterFlightLoopCallback(self, self.floopcb, 0)
+        XPLMUnregisterFlightLoopCallback(self, self.__loop_callback, 0)
         pass
 
     def XPluginEnable(self):
@@ -96,76 +99,77 @@ class PythonInterface:
     def XPluginReceiveMessage(self, in_fromwho, in_message, in_param):
         pass
 
-    def loopcallback(self, elapsedcall, elapsedloop, counterin, refconin):
+    def loop_callback(self, elapsedcall, elapsedloop, counterin, refconin):
         new_freq = XPLMGetDatai(self.xDataRef)
 
-        if not self._oldfreq == new_freq:
-            print("New Frequency tuned in")
-            print("Change TS Channel to %i !" % new_freq)
-            self._oldfreq = new_freq
+        if not self._old_freq == new_freq:
+            print(" === NEW FREQUENCE === ")
+            print("Change TS Channel to %.2f!" % (new_freq/100.0))
+            self._old_freq = new_freq
 
-            plane_pos = (XPLMGetDataf(self.xPlaneLon), XPLMGetDataf(self.xPlaneLat))
-            print("Position: %f N, %f W" % plane_pos)
+            plane_pos = (XPLMGetDataf(self.plane_lon), XPLMGetDataf(self.plane_lat))
+            XPLMDebugString("Position: %f N, %f W" % plane_pos)
 
             # TODO make this asynchron
-            self.newFrequenceTunedIn(new_freq, plane_pos)
+            self.new_frequence_tuned(new_freq, plane_pos)
 
         return 1
 
-    def newFrequenceTunedIn(self, newFreq, planePos):
-        nearest_atc = self.extract_atc(newFreq, planePos)
+    def new_frequence_tuned(self, new_freq, plane_pos):
+        nearest_atc = self.extract_atc(new_freq, plane_pos)
         if nearest_atc == -1:
-            self.freq_conn(self.parseConfig().get("TEAMSPEAK", "SERVER").strip(), "UNICOM")
+            self.freq_conn(self.parse_config().get("TEAMSPEAK", "SERVER").strip(), "UNICOM")
         else:
             self.freq_conn(nearest_atc[4], nearest_atc[0])
 
     def get_config(self):
         """ takes TS useful variables and fixes paths to call TS instance """
-        config = self.parseConfig()
+        config = self.parse_config()
 
         acc_vid = config.get('ACCOUNT', 'VID').strip()
         acc_pwd = config.get('ACCOUNT', 'PASSWORD').strip()
-        ts_path = config.get('TEAMSPEAK', 'TSCONTROL').strip()
+        ts_path = config.get('TEAMSPEAK', 'PATH').strip()
 
         self._ts_control_cmd = ts_path + "client_sdk/tsControl"
         if not os.path.isfile(self._ts_control_cmd):
-            print(self._ts_control_cmd + "does not exists")
+            print(self._ts_control_cmd + "does not exists! Add the absolute path to the X-IvAp.conf file.")
         self._ts_prefix_complete = self._ts_control_cmd + " CONNECT TeamSpeak://"
         self._ts_disconnect_str = self._ts_control_cmd + " DISCONNECT"
         self._ts_login = "?nickname=\"%s\"?loginname=\"%s\"?password=\"%s\"?channel=\"%s\"" % ("%s", acc_vid, acc_pwd, "%s")
 
-        print("Configuration loaded")
+        XPLMDebugString("Configuration loaded")
         pass
 
-    def parseConfig(self):
+    def parse_config(self):
         config = ConfigParser()
-        config.read(self.__ResourcePath + "X-IvAp.conf")
+        config.read(self.__resource_path + "X-IvAp.conf")
         config.sections()
         return config
 
-    def freq_conn(self, ts_server, freq_chan, retry=0):
+    def freq_conn(self, ts_server, freq_chan):
         """ connects TS to any server/freq.channel given
             returns 0 if ok, 1 if a retry is needed
         """
         # TODO exception detection
-        self.getwhazzup()
-        print(" ")
+        self.update_whazzup()
+        if(freq_chan == self._connected_channel):
+            print("Already connected to Channel " + freq_chan)
+            return
+        self._connected_channel = freq_chan
         print("Connecting to %s/%s ...\n" % (ts_server, freq_chan))
 
-        config = self.parseConfig()
+        config = self.parse_config()
         config.set("TEAMSPEAK", "SERVER", ts_server)
-        config.write(open(self.__ResourcePath + "X-IvAp.conf", 'w'))
+        config.write(open(self.__resource_path + "X-IvAp.conf", 'w'))
 
         ts_conn_cmd = self._ts_control_cmd + " CONNECT TeamSpeak://" + ts_server
         ts_conn_cmd += self._ts_login % (config.get("ACCOUNT", "CALLSIGN"), freq_chan)
-        consolecmd(ts_conn_cmd, self.__ResourcePath + "ts.log", "a")  # pass command to console and log output
+        console_cmd(ts_conn_cmd, self.__resource_path + "ts.log", "a")
+        pass
 
-        #self.checkConnection(freq_chan)
-        return 0
-
-    def checkConnection(self, freq_chan):
+    def check_connection(self, freq_chan):
         ts_check_cmd = self._ts_control_cmd + " GET_USER_INFO"
-        stout = self.performCommand(ts_check_cmd)
+        stout = self.perform_command(ts_check_cmd)
         if re.search(freq_chan, stout):
             print("OK! Connection should be established")
             return 1
@@ -177,10 +181,10 @@ class PythonInterface:
             print("WARNING: Must have failed somewhere, let's try again")
         return 0
 
-    def performCommand(self, command):
+    def perform_command(self, command):
         p = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stout = p.stdout.read()  # this gets standard output answer
-        filetolog = open(self.__ResourcePath + "ts.log", "a")
+        filetolog = open(self.__resource_path + "ts.log", "a")
         filetolog.write(time.ctime() + ": " + stout)  # this is to log even connections
         return stout
 
@@ -196,11 +200,11 @@ class PythonInterface:
         distances_list = []
 
         try:
-            whazzup = open(self.__ResourcePath + "whazzup.txt", "r")
+            whazzup = open(self.__resource_path + "whazzup.txt", "r")
         except:
             print("ERROR while opening whazzup.txt file. Is this file there?")
             return -1
-        print("Now find listening ATC on freq  %i:" % com1_freq)
+        XPLMDebugString("Now find listening ATC on freq  %i:" % com1_freq)
         for line in whazzup:  # FOR cycle begin to parse whazzup lines
             splitted = line.split(':')
             if len(splitted) != 49:
@@ -221,36 +225,36 @@ class PythonInterface:
             atc_list.append((icao_id, lat, lon, distance, ts_server))
             atc_on_freq += 1
 
-        print("Found %i ATC Stations" % atc_on_freq)
+        XPLMDebugString("Found %i ATC Stations" % atc_on_freq)
         if atc_on_freq != 0:
             nearest_station = distances_list.index(min(distances_list))
             nearest_atc_tuple = atc_list[nearest_station]
-            print("The nearest valid station is: %s, (%.2f nm)" % (nearest_atc_tuple[0], nearest_atc_tuple[3]))
+            XPLMDebugString("The nearest valid station is: %s, (%.2f nm)" % (nearest_atc_tuple[0], nearest_atc_tuple[3]))
             return nearest_atc_tuple
         else:
             return -1
 
     pass
 
-    def getwhazzup(self):
+    def update_whazzup(self):
         """ Connects to the internet and downloads the data file whazzup.txt from IVAO server only if needed
          which means not more than once every 5 mins.
         TODO Add an option to force immediate download ----!!!!
         TODO we should use another data file provided from IVAO and use a geo-loc ICAO codes list ----!!!!"""
 
-        filename = self.__ResourcePath + "whazzup.txt"
+        filename = self.__resource_path + "whazzup.txt"
         if os.path.exists(filename):
             try:
-                if time.time() - os.path.getmtime(filename) < self.__MaxWhazzupAge:  # 3000 is for debug 300 is ok
-                    print("Old network data are too young do die. I'll keep the previous by now...")
+                if time.time() - os.path.getmtime(filename) < self.__max_whazzup_age:  # 3000 is for debug 300 is ok
+                    XPLMDebugString("Old network data are too young do die. I'll keep the previous by now...")
                     return 1
                 else:
-                    print("Yes, updated network data are needed. Downloading now...")
+                    XPLMDebugString("Yes, updated network data are needed. Downloading now...")
                     os.remove(filename)
             except:
-                print("ERROR retrieving whazzup file from internet. Will try with older one if present.")
+                XPLMDebugString("ERROR retrieving whazzup file from internet. Will try with older one if present.")
 
-        os.system("wget \"%s\" -O \"%s\"" % (self.__Whazz_url, filename))
+        os.system("wget \"%s\" -O \"%s\"" % (self.__whazzup_url, filename))
         if not os.path.exists(filename):
             print("ERROR while downloading network data (whazzup.txt)")
             print("Please check your network")
@@ -259,7 +263,7 @@ class PythonInterface:
 
 
 
-def consolecmd(cmd, logfile, iomode):  # excute custom commands and logs output for debug if needed
+def console_cmd(cmd, logfile, iomode):  # excute custom commands and logs output for debug if needed
     try:  # i/o modes: r,w,a,r+, default=r
         # subprocess.Popen(cmd, shell=True, stdout=logfile, stderr=logfile)
         p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -272,15 +276,20 @@ def consolecmd(cmd, logfile, iomode):  # excute custom commands and logs output 
         return 0
 
 
-def calculate_distance(xPlanePos, ATCPos):  # self explicative returns geographic distances
+def calculate_distance(plane_pos, atc_pos):  # self explicative returns geographic distances
     # maths stuff
     deg_to_rad = math.pi / 180.0
-    phi1 = (90.0 - xPlanePos[0]) * deg_to_rad
-    phi2 = (90.0 - ATCPos[0]) * deg_to_rad
-    theta1 = xPlanePos[1] * deg_to_rad
-    theta2 = ATCPos[1] * deg_to_rad
+    phi1 = (90.0 - plane_pos[0]) * deg_to_rad
+    phi2 = (90.0 - atc_pos[0]) * deg_to_rad
+    theta1 = plane_pos[1] * deg_to_rad
+    theta2 = atc_pos[1] * deg_to_rad
     cos = (math.sin(phi1) * math.sin(phi2) * math.cos(theta1 - theta2) + math.cos(phi1) * math.cos(phi2))
     arc = math.acos(cos)
     distance = arc * 3960  # nautical miles
     # distance = arc*6373 # if kilometers needed
     return distance
+
+def XPLMDebugString(msg):
+    #print(msg)
+
+    pass
