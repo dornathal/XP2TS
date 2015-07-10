@@ -107,7 +107,7 @@ class PythonInterface:
             print("Change TS Channel to %.2f!" % (new_freq/100.0))
             self._old_freq = new_freq
 
-            plane_pos = (XPLMGetDataf(self.plane_lon), XPLMGetDataf(self.plane_lat))
+            plane_pos = (XPLMGetDataf(self.plane_lat), XPLMGetDataf(self.plane_lon))
             XPLMDebugString("Position: %f N, %f W" % plane_pos)
 
             # TODO make this asynchron
@@ -221,9 +221,10 @@ class PythonInterface:
 
             distance = calculate_distance(planePos, (float(lat), float(lon)))
             distances_list.append(distance)
-
-            atc_list.append((icao_id, lat, lon, distance, ts_server))
+            atc_station = (icao_id, lat, lon, distance, ts_server)
+            atc_list.append(atc_station)
             atc_on_freq += 1
+            XPLMDebugString(atc_station)
 
         XPLMDebugString("Found %i ATC Stations" % atc_on_freq)
         if atc_on_freq != 0:
@@ -291,5 +292,4 @@ def calculate_distance(plane_pos, atc_pos):  # self explicative returns geograph
 
 def XPLMDebugString(msg):
     #print(msg)
-
     pass
